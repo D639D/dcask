@@ -1,58 +1,30 @@
-use std::{fs::{File, OpenOptions}, process::Output};
-use wincode::{SchemaRead, SchemaWrite, config::Config};
-use wincode::config::ConfigCore;
+use std::collections::HashMap;
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Seek, Write},
+};
+use wincode::{SchemaRead, SchemaWrite};
 
-#[derive(Debug)]
-#[derive(SchemaRead, SchemaWrite)]
+#[derive(Debug, SchemaRead, SchemaWrite)]
 enum Types {
     Int(i32),
     Float(f64),
     Bool(bool),
     Text(String),
 }
-
-trait ToBytes {
-    fn to_bytes(&self) -> Vec<u8>;
-}
-impl ToBytes for i32 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-}
-impl ToBytes for f64 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-}
-impl ToBytes for bool {
-    fn to_bytes(&self) -> Vec<u8> {
-        [*self as u8].to_vec()
-    }
-}
-impl ToBytes for String {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
-}
-impl ToBytes for &str {
-     
-    fn to_bytes(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
-}
-
-trait EncodeBytes {
-    type Output;
-    fn encode_bytes(self) -> Output;
-}
-
-
-#[derive(SchemaRead, SchemaWrite)]
-#[derive(Debug)]
-struct LogIndex
-{
+#[derive(Debug, SchemaRead, SchemaWrite)]
+struct KeyValue {
     key: String,
-    value: Types,
+    value: Option<Types>,
+}
+
+struct LogIndex {
+    index: HashMap<String, LogIndexEntry>,
+}
+
+struct LogIndexEntry {
+    len: usize,
+    offset: usize,
 }
 
 struct Writer {
@@ -61,6 +33,7 @@ struct Writer {
 
 struct DCask {
     writer: Writer,
+    logindex: LogIndex
 }
 
 impl DCask {
@@ -69,28 +42,56 @@ impl DCask {
             .write(true)
             .read(true)
             .create(true)
-            .append(true)
+            .truncate(true)
             .open(name)
             .unwrap();
         let writer = Writer {
             active_data_file: file,
         };
-        DCask { writer: writer }
+        
+        let logindex = LogIndex {
+            index: HashMap::new()
+        };
+        DCask {
+            writer: writer,
+            logindex: logindex
+        }
     }
 
-    fn set(&mut self, key: &str, value: Types)
-   {
-        let byt = LogIndex {
+    fn set(&mut self, key: &str, value: Types) {
+        let byt = KeyValue {
             key: key.to_string(),
-            value: value,
+            value: Some(value),
         };
         let decoded = wincode::serialize(&byt).unwrap();
-        let encoded: LogIndex<> = wincode::deserialize(&decoded).unwrap();
-        println!("{:?}", &encoded.value);
+        self.write_active_data_file(decoded, key);
+    }
+
+    
+    fn write_active_data_file(&mut self, bytes: Vec<u8>, key: &str) {
+        self.writer.active_data_file.write_all(&bytes).unwrap();
+        let index = LogIndexEntry {
+            len: bytes.len(),
+            offset: self.writer.active_data_file.stream_position().unwrap() as usize,
+        };
+       self.logindex.index.insert(key.to_string(), index);
+        
+    }
+    fn get(&mut self, key: &str) {
+        let log_index_entry = self.logindex.index.get(key).unwrap();
+        let offset = log_index_entry.offset as i64;
+        let len = log_index_entry.len;
+       self.writer.active_data_file.seek(std::io::SeekFrom::Current(offset)).unwrap();
+       let mut buf = Vec::new();
+       self.writer.active_data_file.read_to_end(&mut buf).unwrap();
+       println!("{:?}", buf);
     }
 }
+
+
 
 fn main() {
     let mut db = DCask::new("name");
     db.set("key", Types::Int(1));
+    db.get("key");
 }
